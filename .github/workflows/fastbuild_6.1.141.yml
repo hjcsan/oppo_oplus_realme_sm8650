@@ -625,8 +625,8 @@ jobs:
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
           # 添加对anland前台调度的支持
-          echo "CONFIG_UNIX_DIAG=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_PROC_CHILDREN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_UNIX_DIAG=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PROC_CHILDREN=y" >> ./arch/arm64/configs/gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
           
