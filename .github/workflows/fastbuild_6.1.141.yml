@@ -627,17 +627,10 @@ jobs:
           # ===== Anland 前台调度（原有两项）=====
           echo "CONFIG_UNIX_DIAG=y" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_PROC_CHILDREN=y" >> ./arch/arm64/configs/gki_defconfig
-          # ===== DSH 沙箱 / 内核可观测性 =====
+          # ===== DSH 沙箱（Landlock 是本机唯一可行的沙箱机制）=====
           echo "CONFIG_SECURITY_LANDLOCK=y" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_SECURITY_YAMA=y" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_TASK_DELAY_ACCT=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_FUNCTION_TRACER=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_FUNCTION_GRAPH_TRACER=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SCHED_TRACER=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_DYNAMIC_DEBUG=y" >> ./arch/arm64/configs/gki_defconfig
-          # ===== 桌面：文件监控 + Wayland 录屏 =====
-          echo "CONFIG_FANOTIFY=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_UDMABUF=y" >> ./arch/arm64/configs/gki_defconfig
           # ===== 文件系统模块（=m）=====
           echo "CONFIG_SQUASHFS=m" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_SQUASHFS_XATTR=y" >> ./arch/arm64/configs/gki_defconfig
