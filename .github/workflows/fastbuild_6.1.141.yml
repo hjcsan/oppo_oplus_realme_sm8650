@@ -653,6 +653,18 @@ jobs:
           # ===== USB 主机侧网络驱动：手机 USB 共享网络 =====
           echo "CONFIG_USB_NET_RNDIS_HOST=m" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_USB_NET_CDC_MBIM=m" >> ./arch/arm64/configs/gki_defconfig
+          # ===== 关闭 IKHEADERS（基线 gki_defconfig 自带 =m，必须显式覆盖为 n）=====
+          # 原因：kernel/gen_kheaders.sh 依赖 cpio，而 GitHub Actions 的 ubuntu-latest
+          #       镜像未预装 cpio（环境步骤只装 binutils/python3/libssl/libelf），
+          #       cpio 缺失 -> cpio_dir 为空 -> tar 打出空归档 ->
+          #       kheaders.c 的 .incbin "kernel/kheaders_data.tar.xz" 汇编失败 ->
+          #       make[1]: *** [common/Makefile:2080: .] Error 2
+          # 触发条件：原先 `make Image` 不编译任何模块，所以该路径从未被执行；
+          #       本次为收集 .ko 而新增 modules 目标，第一次激活了它。
+          # Kconfig 规则：后出现的行覆盖先出现的，故此行写在末尾即可覆盖基线的 =m。
+          # 影响：失去 /sys/kernel/kheaders.tar.xz（供 eBPF 工具取内核头文件），
+          #       与 RNDIS / Landlock / ftrace 目标无关，可安全关闭。
+          echo "# CONFIG_IKHEADERS is not set" >> ./arch/arm64/configs/gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image modules
           
