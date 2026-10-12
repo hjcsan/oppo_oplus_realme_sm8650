@@ -666,7 +666,22 @@ jobs:
           #       与 RNDIS / Landlock / ftrace 目标无关，可安全关闭。
           echo "# CONFIG_IKHEADERS is not set" >> ./arch/arm64/configs/gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image modules
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
+          # ===== 模块编译必须与 Image 分开执行（不能写成 `Image modules`）=====
+          # 原因：`modules` 目标依赖 modpost -> modules_check -> modules.order，
+          #       而 modpost 还依赖 vmlinux.o。若与 Image 写在同一行，
+          #       -j$(nproc) 会让两组任务并行调度，modules.order / vmlinux.o
+          #       尚未就绪时 scripts/modules-check.sh 就会失败，表现为
+          #       `make[1]: *** [common/Makefile:2080: .] Error 2`（无具体错误信息）。
+          # 原脚本只有 `Image`，从不编译任何模块，故从未暴露此问题。
+          # 拆成两步串行：确保 Image 完全结束后再编模块。
+          # 用 if 包裹：模块编译失败**不阻断**整个构建，内核镜像仍可正常产出。
+          # 这样即使某个 .ko 编不过，你依然能刷到内核（只是没有 kernel_modules.zip）。
+          if make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error modules; then
+            echo ">>> 模块编译成功"
+          else
+            echo ">>> 警告：模块编译失败，继续打包内核（本次将没有 kernel_modules.zip）"
+          fi
           
           # 编译后时间劫持二次校验
           echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
