@@ -33,6 +33,3 @@ usbnet
 cdc_ether
 rndis_host
 cdc_mbim
-
-# --- 调试 ---------------------------------------------------
-kheaders

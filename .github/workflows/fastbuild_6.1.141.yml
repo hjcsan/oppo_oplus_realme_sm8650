@@ -653,8 +653,6 @@ jobs:
           # ===== USB 主机侧网络驱动：手机 USB 共享网络 =====
           echo "CONFIG_USB_NET_RNDIS_HOST=m" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_USB_NET_CDC_MBIM=m" >> ./arch/arm64/configs/gki_defconfig
-          # ===== 便于在容器内调试 =====
-          echo "CONFIG_IKHEADERS=m" >> ./arch/arm64/configs/gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image modules
           
