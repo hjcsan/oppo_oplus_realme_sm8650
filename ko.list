@@ -1,0 +1,38 @@
+# ============================================================
+# 要打进 kernel_modules.zip 的模块白名单（按模块名，不含 .ko）
+#
+# 为什么需要它：CI 的 `find ../common/out -name '*.ko'` 会把整个 out 树里
+# 所有产物都收进来——那里面有大量 vendor 侧模块（wcd9378-sdw.ko、
+# qcom_iommu_debug.ko 之类）。这些模块和手机里 vendor_dlkm 分区上的**同名模块
+# 不是同一份编译产物**，insmod 进去轻则报版本/符号不匹配，重则直接卡开机。
+# 所以只挑我们真正要的那几个。
+#
+# 评估和调参时用这个白名单更省事：先在 config/modules.config 里加 =m，
+# 只把名字加到这里 → 出的包里就只多这一个 .ko，不用动收集逻辑。
+#
+# 注意：service.sh 不读这个文件（它只 insmod 包内 ko/ 里已有的东西），
+#       所以"改白名单但不重新出包"是不会生效的。
+# ============================================================
+
+# --- 文件系统（config/modules.config 产出）------------------
+squashfs
+isofs
+udf
+cifs
+nfs
+lockd
+sunrpc
+nfs_acl
+grace
+exportfs
+
+# --- USB 主机侧网络：手机 USB 共享网络（RNDIS）--------------
+# 依赖链 usbnet → cdc_ether → rndis_host，usbnet/cdc_ether 系统已自带，
+# 但这里一并列出：万一某个固件没带，包里带上还能自己补。
+usbnet
+cdc_ether
+rndis_host
+cdc_mbim
+
+# --- 调试 ---------------------------------------------------
+kheaders
