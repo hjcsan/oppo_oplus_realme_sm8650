@@ -7,29 +7,15 @@
 # 不是同一份编译产物**，insmod 进去轻则报版本/符号不匹配，重则直接卡开机。
 # 所以只挑我们真正要的那几个。
 #
-# 评估和调参时用这个白名单更省事：先在 config/modules.config 里加 =m，
-# 只把名字加到这里 → 出的包里就只多这一个 .ko，不用动收集逻辑。
-#
 # 注意：service.sh 不读这个文件（它只 insmod 包内 ko/ 里已有的东西），
 #       所以"改白名单但不重新出包"是不会生效的。
 # ============================================================
 
-# --- 文件系统（config/modules.config 产出）------------------
-squashfs
-isofs
-udf
-cifs
-nfs
-lockd
-sunrpc
-nfs_acl
-grace
-exportfs
-
 # --- USB 主机侧网络：手机 USB 共享网络（RNDIS）--------------
-# 依赖链 usbnet → cdc_ether → rndis_host，usbnet/cdc_ether 系统已自带，
-# 但这里一并列出：万一某个固件没带，包里带上还能自己补。
+# 依赖链 usbnet → cdc_ether → rndis_host。
+# usbnet/cdc_ether 系统通常已自带（开机由 Android init 加载），但这里一并列出：
+# 万一某个固件没带，包里带上还能自己补；当系统自带版本与本次内核符号不匹配时，
+# 也可用包内版本顶替。加载顺序由 service.sh 的 3 轮扫描自动处理。
 usbnet
 cdc_ether
 rndis_host
-cdc_mbim

@@ -1,6 +1,6 @@
-id=dsh_kernel_modules
-name=内核模块集 (Kernel Modules)
-version=1.1
-versionCode=2
+id=rndis_host
+name=USB共享网络 (RNDIS Host)
+version=1.2
+versionCode=3
 author=hjcsan
-description=开机 insmod 自编内核的模块（squashfs / iso9660 / udf / cifs / nfs / rndis_host 手机USB共享 等），Android 与 Droidspaces 容器共用同一内核。包内模块白名单见 ko.list
+description=开机自动 insmod 自编的 RNDIS 主机端驱动，让平板可接收手机的 USB 网络共享。加载顺序：usbnet → cdc_ether → rndis_host（由 service.sh 三轮扫描自动处理）。查看结果请点模块的"操作"按钮。

@@ -26,7 +26,7 @@ on:
         description: '是否开启susfs(用于增强隐藏环境挂载功能; 可能轻微增加耗电，上游更新导致不稳定时或不需要可关闭)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       kpm_enable:
         description: '是否开启kpm(使用KpatchNext独立实现kpm(支持任意KSU/面具环境); 不需要可保持默认关闭)'
         required: true
@@ -624,52 +624,25 @@ jobs:
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
-          # ===== Anland 前台调度（原有两项）=====
+          # ===== 1. Anland 前台调度所需的内核接口 =====
           echo "CONFIG_UNIX_DIAG=y" >> ./arch/arm64/configs/gki_defconfig
           echo "CONFIG_PROC_CHILDREN=y" >> ./arch/arm64/configs/gki_defconfig
-          # ===== DSH 沙箱（Landlock 是本机唯一可行的沙箱机制）=====
+          # ===== 2. DSH 沙箱（Landlock）=====
+          # 注意：Landlock 的 Kconfig 有 `select SECURITY_PATH`，会自动带出该符号
           echo "CONFIG_SECURITY_LANDLOCK=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SECURITY_YAMA=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TASK_DELAY_ACCT=y" >> ./arch/arm64/configs/gki_defconfig
-          # ===== 文件系统模块（=m）=====
-          echo "CONFIG_SQUASHFS=m" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SQUASHFS_XATTR=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SQUASHFS_ZLIB=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SQUASHFS_LZ4=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SQUASHFS_LZO=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SQUASHFS_XZ=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SQUASHFS_ZSTD=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_ISO9660_FS=m" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_UDF_FS=m" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_CIFS=m" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_NFS_FS=m" >> ./arch/arm64/configs/gki_defconfig
-          # ===== USB 主机侧网络驱动：手机 USB 共享网络 =====
+          # ===== 3. 手机 USB 网络共享（RNDIS 主机端）=====
+          # 用 =m 模块：不改变 USB_NET_DRIVERS / USB_USBNET / USB_NET_CDCETHER 的
+          # 原有 =m 状态（若写成 =y，Kconfig 会把这一族全部提升为 =y，内核体积暴涨）。
           echo "CONFIG_USB_NET_RNDIS_HOST=m" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_USB_NET_CDC_MBIM=m" >> ./arch/arm64/configs/gki_defconfig
-          # ===== 关闭 IKHEADERS（基线 gki_defconfig 自带 =m，必须显式覆盖为 n）=====
-          # 原因：kernel/gen_kheaders.sh 依赖 cpio，而 GitHub Actions 的 ubuntu-latest
-          #       镜像未预装 cpio（环境步骤只装 binutils/python3/libssl/libelf），
-          #       cpio 缺失 -> cpio_dir 为空 -> tar 打出空归档 ->
-          #       kheaders.c 的 .incbin "kernel/kheaders_data.tar.xz" 汇编失败 ->
-          #       make[1]: *** [common/Makefile:2080: .] Error 2
-          # 触发条件：原先 `make Image` 不编译任何模块，所以该路径从未被执行；
-          #       本次为收集 .ko 而新增 modules 目标，第一次激活了它。
-          # Kconfig 规则：后出现的行覆盖先出现的，故此行写在末尾即可覆盖基线的 =m。
-          # 影响：失去 /sys/kernel/kheaders.tar.xz（供 eBPF 工具取内核头文件），
-          #       与 RNDIS / Landlock / ftrace 目标无关，可安全关闭。
-          echo "# CONFIG_IKHEADERS is not set" >> ./arch/arm64/configs/gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
-          # ===== 模块编译必须与 Image 分开执行（不能写成 `Image modules`）=====
-          # 原因：`modules` 目标依赖 modpost -> modules_check -> modules.order，
-          #       而 modpost 还依赖 vmlinux.o。若与 Image 写在同一行，
-          #       -j$(nproc) 会让两组任务并行调度，modules.order / vmlinux.o
-          #       尚未就绪时 scripts/modules-check.sh 就会失败，表现为
-          #       `make[1]: *** [common/Makefile:2080: .] Error 2`（无具体错误信息）。
-          # 原脚本只有 `Image`，从不编译任何模块，故从未暴露此问题。
-          # 拆成两步串行：确保 Image 完全结束后再编模块。
-          # 用 if 包裹：模块编译失败**不阻断**整个构建，内核镜像仍可正常产出。
-          # 这样即使某个 .ko 编不过，你依然能刷到内核（只是没有 kernel_modules.zip）。
+          # ===== 编译内核模块（=m 的选项产出 .ko）=====
+          # 必须与 Image 分成两步串行：`modules` 依赖 modpost -> modules_check ->
+          # modules.order，还需要 vmlinux.o；若与 Image 写在同一行，-j$(nproc)
+          # 会让两组任务并行调度，modules.order/vmlinux.o 未就绪时 scripts/modules-check.sh
+          # 就会失败，表现为 `make[1]: *** [Makefile:2080: .] Error 2`（无具体错误）。
+          # 原脚本只有 Image，从不编译模块，故从未暴露此问题。
+          # 用 if 包裹：模块失败不阻断构建，内核镜像仍可正常产出。
           if make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error modules; then
             echo ">>> 模块编译成功"
           else
@@ -717,9 +690,7 @@ jobs:
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
           fi
-
-          # ===== 收集内核模块（上面 =m 的选项会产出 .ko）=====
-          # ko.list / select-ko.py / 模块骨架无法内联，需从仓库拉取。
+          # ===== 收集内核模块，组装成可手动安装的 Magisk/KSU 模块包 =====
           # 整段包在 if/else 里：任何失败只打印警告并返回 0，绝不影响内核产物。
           AK3_DIR="$PWD"
           RAW="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME"
@@ -727,7 +698,6 @@ jobs:
           mkdir -p ./km-skel/magisk-module/META-INF/com/google/android
           if wget -q -O "$AK3_DIR/ko.list" "$RAW/ko.list" \
              && wget -q -O "$AK3_DIR/select-ko.py" "$RAW/magisk-module/select-ko.py" \
-             && wget -q -O "$AK3_DIR/pak.py" "$RAW/magisk-module/patch-anykernel.py" \
              && wget -q -O "./km-skel/magisk-module/module.prop" "$RAW/magisk-module/module.prop" \
              && wget -q -O "./km-skel/magisk-module/service.sh" "$RAW/magisk-module/service.sh" \
              && wget -q -O "./km-skel/magisk-module/action.sh" "$RAW/magisk-module/action.sh" \
@@ -736,22 +706,17 @@ jobs:
             if [ -s "$AK3_DIR/ko.list" ] && [ -s "./km-skel/magisk-module/module.prop" ] \
                && python3 -m py_compile "$AK3_DIR/select-ko.py" 2>/dev/null; then
               if python3 "$AK3_DIR/select-ko.py" ../common/out "$AK3_DIR/ko.list" \
-                   "$AK3_DIR/../kernel_modules.zip" "$AK3_DIR/km-skel"; then
-                if [ -f "$AK3_DIR/../kernel_modules.zip" ]; then
-                  cp "$AK3_DIR/../kernel_modules.zip" "$AK3_DIR/kernel_modules.zip"
-                  echo ">>> 已生成 kernel_modules.zip（随 AnyKernel3 包一起分发）"
-                  KMOD_OK=1
-                fi
+                   "$AK3_DIR/kernel_modules.zip" "$AK3_DIR/km-skel"; then
+                echo ">>> 已生成 kernel_modules.zip（随 AnyKernel3 包一起分发，需手动安装）"
+                KMOD_OK=1
               fi
             fi
           fi
-          if [ "$KMOD_OK" = "1" ]; then
-            python3 "$AK3_DIR/pak.py" "$AK3_DIR/anykernel.sh" || true
-          else
+          if [ "$KMOD_OK" != "1" ]; then
             echo ">>> 警告：模块打包跳过（拉取失败或未产出 .ko）"
             echo ">>>       内核本身已正常编译，只是本次没有 kernel_modules.zip"
           fi
-          rm -rf "$AK3_DIR/pak.py" "$AK3_DIR/km-skel"
+          rm -rf "$AK3_DIR/select-ko.py" "$AK3_DIR/km-skel"
           echo ">>> 模块步骤结束（不影响后续流程）"
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             KSU_TYPENAME="SukiSU"
