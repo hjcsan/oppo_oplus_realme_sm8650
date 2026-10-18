@@ -387,6 +387,17 @@ jobs:
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/cve-2026-43499-rtmutex-6.1.patch
           patch -p1 -F 3 < cve-2026-43499-rtmutex-6.1.patch
+          # 修复 vivo/iQOO 手机的 RNDIS 描述符缺陷（USB 共享网络）
+          # iQOO 12 (2d95:600a) 插到平板上时报 "bad CDC descriptors"，
+          # RNDIS 数据接口永远 claim 不上，usb0 一直是 DOWN。
+          # 其布局其实是标准 RNDIS（IAD 声明 2 接口、接口0 = e0/01/03），
+          # 因此在 usbnet_generic_cdc_bind() 里对这两个 VID/PID 强制
+          # 走"硬编码 0/1 接口"的既有兜底路径；同时把几处 dev_dbg 提升为
+          # dev_info、在 bad_desc 处打印各字段指针，便于下次失败时定位。
+          # 注意：本补丁必须配合 USB_NET_CDCETHER=y 内置才生效——设备上
+          # cdc_ether.ko 由 vendor 开机即加载且无法 rmmod，模块形式顶不掉。
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/rndis_vivo_quirk.patch
+          patch -p1 -F 3 < rndis_vivo_quirk.patch || { echo "!!! RNDIS quirk 补丁失败"; exit 1; }
           
       - name: 启用网络功能增强优化配置
         if: inputs.better_net
@@ -631,9 +642,23 @@ jobs:
           # 注意：Landlock 的 Kconfig 有 `select SECURITY_PATH`，会自动带出该符号
           echo "CONFIG_SECURITY_LANDLOCK=y" >> ./arch/arm64/configs/gki_defconfig
           # ===== 3. 手机 USB 网络共享（RNDIS 主机端）=====
-          # 用 =m 模块：不改变 USB_NET_DRIVERS / USB_USBNET / USB_NET_CDCETHER 的
-          # 原有 =m 状态（若写成 =y，Kconfig 会把这一族全部提升为 =y，内核体积暴涨）。
-          echo "CONFIG_USB_NET_RNDIS_HOST=m" >> ./arch/arm64/configs/gki_defconfig
+          # 全部内置 =y，原因：vivo/iQOO 的 RNDIS 描述符需要 quirk（见
+          # other_patch/rndis_vivo_quirk.patch，改的是 drivers/net/usb/cdc_ether.c），
+          # 而设备上 cdc_ether.ko / usbnet.ko 由 Android 开机时 vendor 已加载且
+          # 引用计数非 0、无法 rmmod，模块形式永远顶不掉它 => 补丁必须编进 vmlinux。
+          # 连锁影响（已核对 Kconfig）：
+          #   USB_NET_CDCETHER  depends on USB_USBNET  -> USB_USBNET 必须 =y
+          #   USB_USBNET        select MII             -> MII 变 =y
+          #   USB_NET_RNDIS_HOST select USB_NET_CDCETHER -> 一并内置
+          # 其余 USB 网卡（asix/ax88179_178a/aqc111/cdc_ncm/cdc_eem/r8153_ecm…）
+          # 依赖是 depends on USB_USBNET，=y 的符号可以选 =m 的下层依赖，故仍是 =m，
+          # 不会把整族网卡都内置。体积代价约 200 KB。
+          echo "CONFIG_USB_NET_DRIVERS=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_USB_USBNET=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_USB_NET_CDCETHER=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_USB_NET_RNDIS_HOST=y" >> ./arch/arm64/configs/gki_defconfig
+          # ===== 4. 调试日志（dev_dbg 默认被编掉，开了才能拿到 CDC 解析的具体失败分支）=====
+          echo "CONFIG_DYNAMIC_DEBUG=y" >> ./arch/arm64/configs/gki_defconfig
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
           # ===== 编译内核模块（=m 的选项产出 .ko）=====
