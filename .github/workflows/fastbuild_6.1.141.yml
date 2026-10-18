@@ -90,6 +90,11 @@ on:
         required: true
         type: boolean
         default: 'false'
+      debug_kmsg:
+        description: '是否开启 CONFIG_DYNAMIC_DEBUG(排查 USB/RNDIS 等问题时查看 dev_dbg 日志用, 内核体积增加约200KB, 日常不必开启)'
+        required: true
+        type: boolean
+        default: 'false'
       kernel_suffix:
         description: '内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)'
         required: false
@@ -396,8 +401,43 @@ jobs:
           # dev_info、在 bad_desc 处打印各字段指针，便于下次失败时定位。
           # 注意：本补丁必须配合 USB_NET_CDCETHER=y 内置才生效——设备上
           # cdc_ether.ko 由 vendor 开机即加载且无法 rmmod，模块形式顶不掉。
-          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/rndis_vivo_quirk.patch
-          patch -p1 -F 3 < rndis_vivo_quirk.patch || { echo "!!! RNDIS quirk 补丁失败"; exit 1; }
+          #
+          # 失败策略：降级，不中断编译。补丁打的是上游 cdc_ether.c，AOSP 一改这个
+          # 文件上述 context 就可能对不上（-F 3 只容忍 3 行偏移）。硬失败会让整次
+          # 编译连内核镜像都拿不到；降级至少还能产出可用内核，只是没有 vivo 修复。
+          # 降级时第 3 组注入会退回 =m（见下方 USB 段落），保持与补丁打上时一致的行为。
+          #
+          # 为什么必须"先备份再打"：patch 失败时可能是【部分应用】——文件被改了几处、
+          # 剩下的进了 .rej。这种半成品比完全失败更危险，典型后果是加了使用
+          # vivo_rndis_quirk 的代码但没加变量声明，编译时报一堆看不懂的
+          # "use of undeclared identifier" 把真正原因藏起来。
+          # common/ 是从 zip 解压的、没有 .git，用不了 git checkout 还原，
+          # 而反向打补丁在部分应用时同样会失败（实测过），所以只能先备份。
+          RNDIS_QUIRK_OK=0
+          RNDIS_TARGET=drivers/net/usb/cdc_ether.c
+          if [ ! -f "$RNDIS_TARGET" ]; then
+            echo "::error::找不到 $RNDIS_TARGET，上游目录结构可能变了"
+            RNDIS_QUIRK_OK=0
+          else
+            cp -a "$RNDIS_TARGET" "$RNDIS_TARGET.rndis-bak"
+            wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/rndis_vivo_quirk.patch -O /tmp/rndis_vivo_quirk.patch
+            if patch -p1 -F 3 --no-backup-if-mismatch < /tmp/rndis_vivo_quirk.patch; then
+              RNDIS_QUIRK_OK=1
+              echo ">>> RNDIS vivo quirk 补丁已应用"
+            else
+              echo "::warning::RNDIS vivo quirk 补丁失败——本次编译【不带】vivo/iQOO USB 共享网络修复"
+              echo "::warning::请检查 other_patch/rndis_vivo_quirk.patch 是否需要相对上游 rebase"
+              echo "--- 补丁拒绝的片段（.rej 内容，供定位）---"
+              find . -name '*.rej' -exec sh -c 'echo "== {} =="; head -40 "{}"' \;
+              # 用备份无条件还原：不管 patch 是部分应用还是完全没动，都回到干净状态
+              cp -a "$RNDIS_TARGET.rndis-bak" "$RNDIS_TARGET"
+              find . -name '*.rej' -delete
+              find . -name '*.orig' -delete
+              RNDIS_QUIRK_OK=0
+            fi
+            rm -f "$RNDIS_TARGET.rndis-bak"
+          fi
+          echo "RNDIS_QUIRK_OK=$RNDIS_QUIRK_OK" >> "$GITHUB_ENV"
           
       - name: 启用网络功能增强优化配置
         if: inputs.better_net
@@ -642,23 +682,50 @@ jobs:
           # 注意：Landlock 的 Kconfig 有 `select SECURITY_PATH`，会自动带出该符号
           echo "CONFIG_SECURITY_LANDLOCK=y" >> ./arch/arm64/configs/gki_defconfig
           # ===== 3. 手机 USB 网络共享（RNDIS 主机端）=====
-          # 全部内置 =y，原因：vivo/iQOO 的 RNDIS 描述符需要 quirk（见
-          # other_patch/rndis_vivo_quirk.patch，改的是 drivers/net/usb/cdc_ether.c），
-          # 而设备上 cdc_ether.ko / usbnet.ko 由 Android 开机时 vendor 已加载且
-          # 引用计数非 0、无法 rmmod，模块形式永远顶不掉它 => 补丁必须编进 vmlinux。
-          # 连锁影响（已核对 Kconfig）：
-          #   USB_NET_CDCETHER  depends on USB_USBNET  -> USB_USBNET 必须 =y
-          #   USB_USBNET        select MII             -> MII 变 =y
-          #   USB_NET_RNDIS_HOST select USB_NET_CDCETHER -> 一并内置
-          # 其余 USB 网卡（asix/ax88179_178a/aqc111/cdc_ncm/cdc_eem/r8153_ecm…）
-          # 依赖是 depends on USB_USBNET，=y 的符号可以选 =m 的下层依赖，故仍是 =m，
-          # 不会把整族网卡都内置。体积代价约 200 KB。
-          echo "CONFIG_USB_NET_DRIVERS=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_USB_USBNET=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_USB_NET_CDCETHER=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_USB_NET_RNDIS_HOST=y" >> ./arch/arm64/configs/gki_defconfig
-          # ===== 4. 调试日志（dev_dbg 默认被编掉，开了才能拿到 CDC 解析的具体失败分支）=====
-          echo "CONFIG_DYNAMIC_DEBUG=y" >> ./arch/arm64/configs/gki_defconfig
+          # 内置还是外置，取决于上一步 RNDIS quirk 补丁是否打上（RNDIS_QUIRK_OK）：
+          #
+          # 打上(RNDIS_QUIRK_OK=1) => 必须全部 =y。
+          #   原因：vivo/iQOO 的 RNDIS 描述符需要 quirk（见
+          #   other_patch/rndis_vivo_quirk.patch，改的是 drivers/net/usb/cdc_ether.c），
+          #   而设备上 cdc_ether.ko / usbnet.ko 由 Android 开机时 vendor 已加载且
+          #   引用计数非 0、无法 rmmod，模块形式永远顶不掉它 => 补丁必须编进 vmlinux。
+          #   连锁影响（已核对 Kconfig）：
+          #     USB_NET_CDCETHER  depends on USB_USBNET  -> USB_USBNET 必须 =y
+          #     USB_USBNET        select MII             -> MII 变 =y
+          #     USB_NET_RNDIS_HOST select USB_NET_CDCETHER -> 一并内置
+          #   其余 USB 网卡（asix/ax88179_178a/aqc111/cdc_ncm/cdc_eem/r8153_ecm…）
+          #   依赖是 depends on USB_USBNET，=y 的符号可以选 =m 的下层依赖，故仍是 =m，
+          #   不会把整族网卡都内置。体积代价约 200 KB。
+          #
+          # 没打上(RNDIS_QUIRK_OK=0) => 退回 =m。
+          #   内置一份没有任何 quirk 的 cdc_ether 没有任何好处，反而会：
+          #     1) 让 usbnet.ko / cdc_ether.ko / rndis_host.ko 不再产出，
+          #        ko.list 的白名单若还列着它们就会报"没编出来"；
+          #     2) 把 vendor 原本那份可加载的模块体系打乱。
+          #   退回 =m 时与改动前的内核行为完全一致，是安全的降级基线。
+          if [ "${RNDIS_QUIRK_OK:-0}" = "1" ]; then
+            echo ">>> USB 网络：RNDIS quirk 已就位，usbnet/cdc_ether/rndis_host 全部内置(=y)"
+            for _opt in USB_NET_DRIVERS USB_USBNET USB_NET_CDCETHER USB_NET_RNDIS_HOST; do
+              echo "CONFIG_${_opt}=y" >> ./arch/arm64/configs/gki_defconfig
+            done
+          else
+            echo "::warning::USB 网络：RNDIS quirk 未应用，退回模块形式(=m)，与改动前内核一致"
+            for _opt in USB_NET_DRIVERS USB_USBNET USB_NET_CDCETHER USB_NET_RNDIS_HOST; do
+              echo "CONFIG_${_opt}=m" >> ./arch/arm64/configs/gki_defconfig
+            done
+          fi
+          # ===== 4. 调试日志（排查期临时项，默认关闭）=====
+          # DYNAMIC_DEBUG 让所有 pr_debug/dev_dbg 变成运行时可控条目，代价是
+          # 内核体积 +100~200 KB 和多一次哈希查找。rndis_vivo_quirk.patch 已经把
+          # 关键分支的 dev_dbg 提升成 dev_info 了，所以常规排查**不需要**它。
+          # 只在需要看 cdc_ether 里其余没被提升的 dev_dbg 时才手动打开：
+          #   workflow_dispatch 勾选 debug_kmsg
+          if [ "${{ inputs.debug_kmsg }}" = "true" ]; then
+            echo ">>> 已开启 CONFIG_DYNAMIC_DEBUG（调试内核，会比正式版大 ~200KB）"
+            echo "CONFIG_DYNAMIC_DEBUG=y" >> ./arch/arm64/configs/gki_defconfig
+          else
+            echo ">>> CONFIG_DYNAMIC_DEBUG 未开启（正式内核）"
+          fi
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
           # ===== 编译内核模块（=m 的选项产出 .ko）=====
@@ -716,10 +783,14 @@ jobs:
             exit 1
           fi
           # ===== 收集内核模块，组装成可手动安装的 Magisk/KSU 模块包 =====
-          # 整段包在 if/else 里：任何失败只打印警告并返回 0，绝不影响内核产物。
+          # 三种结局必须区分开，不能再合并成一句"模块打包跳过"：
+          #   KMOD_STATE=ok    → 已生成 kernel_modules.zip
+          #   KMOD_STATE=empty → ko.list 白名单为空（当前故意为空，见该文件注释）
+          #   KMOD_STATE=fail  → 真失败（wget 404 / py_compile 失败 / 白名单没匹配到）
+          # 只有 fail 才报错退出；empty 是预期行为，不算故障。
           AK3_DIR="$PWD"
           RAW="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME"
-          KMOD_OK=0
+          KMOD_STATE=fail
           mkdir -p ./km-skel/magisk-module/META-INF/com/google/android
           if wget -q -O "$AK3_DIR/ko.list" "$RAW/ko.list" \
              && wget -q -O "$AK3_DIR/select-ko.py" "$RAW/magisk-module/select-ko.py" \
@@ -728,21 +799,46 @@ jobs:
              && wget -q -O "./km-skel/magisk-module/action.sh" "$RAW/magisk-module/action.sh" \
              && wget -q -O "./km-skel/magisk-module/META-INF/com/google/android/update-binary" "$RAW/magisk-module/META-INF/com/google/android/update-binary" \
              && wget -q -O "./km-skel/magisk-module/META-INF/com/google/android/updater-script" "$RAW/magisk-module/META-INF/com/google/android/updater-script"; then
-            if [ -s "$AK3_DIR/ko.list" ] && [ -s "./km-skel/magisk-module/module.prop" ] \
+            
+            # 白名单有效行数（去掉注释与空行）——用于区分"故意为空"和"真失败"
+            KMOD_WANTED=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$AK3_DIR/ko.list" | grep -c . || true)
+            echo ">>> ko.list 白名单条目数: $KMOD_WANTED"
+            
+            if [ -s "./km-skel/magisk-module/module.prop" ] \
                && python3 -m py_compile "$AK3_DIR/select-ko.py" 2>/dev/null; then
-              if python3 "$AK3_DIR/select-ko.py" ../common/out "$AK3_DIR/ko.list" \
+              
+              if [ "$KMOD_WANTED" -eq 0 ]; then
+                echo ">>> ko.list 白名单为空——本次不产出 kernel_modules.zip（预期行为，非故障）"
+                echo ">>>   要外置模块请在仓库根目录 ko.list 里填入模块名（不含 .ko）"
+                KMOD_STATE=empty
+              elif python3 "$AK3_DIR/select-ko.py" ../common/out "$AK3_DIR/ko.list" \
                    "$AK3_DIR/kernel_modules.zip" "$AK3_DIR/km-skel"; then
                 echo ">>> 已生成 kernel_modules.zip（随 AnyKernel3 包一起分发，需手动安装）"
-                KMOD_OK=1
+                KMOD_STATE=ok
+              else
+                echo "::error::select-ko.py 执行失败——白名单里的模块很可能没有编出来"
+                echo "::error::检查这些符号是否为 =y（内置后就不再产出 .ko）、或相关 config 是否没生效"
+                KMOD_STATE=fail
               fi
+            else
+              echo "::error::module.prop 为空，或 select-ko.py 语法检查失败"
+              KMOD_STATE=fail
             fi
+          else
+            echo "::error::从 $RAW 拉取模块打包素材失败（可能是分支重命名或文件缺失）"
+            KMOD_STATE=fail
           fi
-          if [ "$KMOD_OK" != "1" ]; then
-            echo ">>> 警告：模块打包跳过（拉取失败或未产出 .ko）"
-            echo ">>>       内核本身已正常编译，只是本次没有 kernel_modules.zip"
-          fi
+          
           rm -rf "$AK3_DIR/select-ko.py" "$AK3_DIR/km-skel"
-          echo ">>> 模块步骤结束（不影响后续流程）"
+          case "$KMOD_STATE" in
+            ok)    echo ">>> 模块步骤：已打包" ;;
+            empty) echo ">>> 模块步骤：白名单为空，跳过打包（正常）" ;;
+            *)
+              echo ">>> 模块步骤：失败。内核镜像已正常产出，但本次没有 kernel_modules.zip"
+              exit 1
+              ;;
+          esac
+          echo ">>> 模块步骤结束"
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             KSU_TYPENAME="SukiSU"
           elif [[ ${{ github.event.inputs.ksu_type }} == "resukisu" ]]; then
